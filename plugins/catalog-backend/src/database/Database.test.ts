@@ -14,26 +14,65 @@
  * limitations under the License.
  */
 
-import knex from 'knex';
+import { ConflictError } from '@backstage/backend-common';
+import Knex from 'knex';
 import path from 'path';
 import { Database } from './Database';
-import { AddDatabaseLocation, DbLocationsRow } from './types';
+import {
+  AddDatabaseLocation,
+  DbEntityRequest,
+  DbEntityResponse,
+  DbLocationsRow,
+} from './types';
 
 describe('Database', () => {
-  const database = knex({
-    client: 'sqlite3',
-    connection: ':memory:',
-    useNullAsDefault: true,
-  });
-  database.client.pool.on('createSuccess', (_eventId: any, resource: any) => {
-    resource.run('PRAGMA foreign_keys = ON', () => {});
-  });
+  let database: Knex;
+  let entityRequest: DbEntityRequest;
+  let entityResponse: DbEntityResponse;
 
   beforeEach(async () => {
+    database = Knex({
+      client: 'sqlite3',
+      connection: ':memory:',
+      useNullAsDefault: true,
+    });
+
+    await database.raw('PRAGMA foreign_keys = ON');
     await database.migrate.latest({
       directory: path.resolve(__dirname, 'migrations'),
       loadExtensions: ['.ts'],
     });
+
+    entityRequest = {
+      entity: {
+        apiVersion: 'a',
+        kind: 'b',
+        metadata: {
+          name: 'c',
+          namespace: 'd',
+          labels: { e: 'f' },
+          annotations: { g: 'h' },
+        },
+        spec: { i: 'j' },
+      },
+    };
+
+    entityResponse = {
+      locationId: undefined,
+      entity: {
+        apiVersion: 'a',
+        kind: 'b',
+        metadata: {
+          uid: expect.anything(),
+          generation: expect.anything(),
+          name: 'c',
+          namespace: 'd',
+          labels: { e: 'f' },
+          annotations: { g: 'h' },
+        },
+        spec: { i: 'j' },
+      },
+    };
   });
 
   it('manages locations', async () => {
@@ -75,4 +114,102 @@ describe('Database', () => {
     // Locations contain only one record
     expect(locations).toEqual([output1]);
   });
+
+  describe('addEntity', () => {
+    it('happy path: adds entity to empty database', async () => {
+      const catalog = new Database(database);
+      await expect(
+        catalog.transaction(tx => catalog.addEntity(tx, entityRequest)),
+      ).resolves.toStrictEqual(entityResponse);
+    });
+
+    it('rejects adding the same-named entity twice', async () => {
+      const catalog = new Database(database);
+      await catalog.transaction(tx => catalog.addEntity(tx, entityRequest));
+      await expect(
+        catalog.transaction(tx => catalog.addEntity(tx, entityRequest)),
+      ).rejects.toThrow(ConflictError);
+    });
+
+    it('accepts adding the same-named entity twice if on different namespaces', async () => {
+      const catalog = new Database(database);
+      entityRequest.entity.metadata!.namespace = 'namespace1';
+      await catalog.transaction(tx => catalog.addEntity(tx, entityRequest));
+      entityRequest.entity.metadata!.namespace = 'namespace2';
+      await expect(
+        catalog.transaction(tx => catalog.addEntity(tx, entityRequest)),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  /*
+  describe('addOrUpdateEntity', () => {
+    it('happy path: adds entity to empty database', async () => {
+      const catalog = new Database(database);
+      await expect(
+        catalog.addOrUpdateEntity(entityRequest),
+      ).resolves.toStrictEqual(entityResponse);
+    });
+
+    it('accepts update with uid and generation', async () => {
+      const catalog = new Database(database);
+      const added = await catalog.addOrUpdateEntity(entityRequest);
+
+      added.entity.kind = 'new';
+      const updated = await catalog.addOrUpdateEntity(added);
+      expect(updated.entity.metadata!.generation).toEqual(
+        added.entity.metadata!.generation! + 1,
+      );
+      expect(updated.entity.kind).toBe('new');
+
+      const read = await catalog.entity(
+        added.entity.metadata!.name!,
+        added.entity.metadata!.namespace,
+      );
+      expect(read.entity.metadata!.generation).toEqual(
+        added.entity.metadata!.generation! + 1,
+      );
+      expect(read.entity.kind).toBe('new');
+    });
+
+    it('rejects update with uid and wrong generation', async () => {
+      const catalog = new Database(database);
+      const added = await catalog.addOrUpdateEntity(entityRequest);
+
+      added.entity.kind = 'new';
+      added.entity.metadata!.generation! += 7;
+      await expect(catalog.addOrUpdateEntity(added)).rejects.toThrow(
+        /entity matching/i,
+      );
+    });
+
+    it('accepts update with uid without generation', async () => {
+      const catalog = new Database(database);
+      const added = await catalog.addOrUpdateEntity(entityRequest);
+      const oldGeneration = added.entity.metadata!.generation!;
+
+      added.entity.kind = 'new';
+      added.entity.metadata!.generation = undefined;
+
+      const updated = await catalog.addOrUpdateEntity(added);
+      expect(updated.entity.metadata!.generation).toEqual(oldGeneration + 1);
+      expect(updated.entity.kind).toBe('new');
+
+      const read = await catalog.entity(
+        added.entity.metadata!.name!,
+        added.entity.metadata!.namespace,
+      );
+      expect(read.entity.metadata!.generation).toEqual(oldGeneration + 1);
+      expect(read.entity.kind).toBe('new');
+    });
+
+    it('rejects adding conflicting name', async () => {
+      const catalog = new Database(database);
+      await catalog.addOrUpdateEntity(entityRequest);
+      await expect(catalog.addOrUpdateEntity(entityRequest)).rejects.toThrow(
+        ConflictError,
+      );
+    });
+  });
+  */
 });

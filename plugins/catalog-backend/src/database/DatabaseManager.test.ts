@@ -53,7 +53,7 @@ describe('DatabaseManager', () => {
 
     it('can update a single location', async () => {
       const db = ({
-        addOrUpdateEntity: jest.fn(),
+        addEntity: jest.fn(),
         locations: jest.fn(() =>
           Promise.resolve([
             {
@@ -84,13 +84,11 @@ describe('DatabaseManager', () => {
       ).resolves.toBeUndefined();
       expect(reader.read).toHaveBeenCalledTimes(1);
       expect(reader.read).toHaveBeenNthCalledWith(1, 'some', 'thing');
-      expect(db.addOrUpdateEntity).toHaveBeenCalledTimes(1);
-      expect(db.addOrUpdateEntity).toHaveBeenNthCalledWith(1, {
-        locationId: '123',
-        entity: expect.objectContaining({
-          metadata: expect.objectContaining({ name: 'c1' }),
-        }),
-      });
+      expect(db.addEntity).toHaveBeenCalledTimes(1);
+      expect(db.addEntity).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ locationId: '123', name: 'c1' }),
+      );
     });
 
     it('logs successful updates', async () => {

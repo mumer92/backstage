@@ -14,10 +14,15 @@
  * limitations under the License.
  */
 
-import { InputError, NotFoundError } from '@backstage/backend-common';
+import {
+  ConflictError,
+  InputError,
+  NotFoundError,
+} from '@backstage/backend-common';
 import Knex from 'knex';
 import { v4 as uuidv4 } from 'uuid';
 import { DescriptorEnvelope } from '../ingestion';
+import { buildEntitySearch } from './search';
 import {
   AddDatabaseLocation,
   DatabaseLocationUpdateLogEvent,
@@ -27,7 +32,6 @@ import {
   DbEntityResponse,
   DbLocationsRow,
 } from './types';
-import { buildEntitySearch } from './search';
 
 function serializeMetadata(
   metadata: DescriptorEnvelope['metadata'],
@@ -99,46 +103,198 @@ function entityDbToResponse(row: DbEntitiesRow): DbEntityResponse {
 export class Database {
   constructor(private readonly database: Knex) {}
 
-  async addOrUpdateEntity(request: DbEntityRequest): Promise<void> {
-    if (!request.entity.metadata?.name) {
-      throw new InputError(`Entities without names are not yet supported`);
+  async transaction<T>(
+    fn: (tx: Knex.Transaction<any, any>) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.database.transaction<T>(fn);
+    } catch (e) {
+      if (
+        /SQLITE_CONSTRAINT: UNIQUE/.test(e.message) ||
+        /unique constraint/.test(e.message)
+      ) {
+        throw new ConflictError(`Rejected due to a conflicting entity`, e);
+      }
+
+      throw e;
+    }
+  }
+
+  async addEntity(
+    tx: Knex.Transaction<any, any>,
+    request: DbEntityRequest,
+  ): Promise<DbEntityResponse> {
+    const newRow = entityRequestToDb(request);
+    newRow.id = uuidv4();
+    newRow.generation = 1;
+
+    await tx('entities').insert(newRow);
+
+    const result = await tx<DbEntitiesRow>('entities')
+      .where({ id: newRow.id })
+      .select();
+
+    if (!result.length) {
+      throw new ConflictError(`Failed to read the generated entity`);
     }
 
+    return entityDbToResponse(result[0]);
+  }
+
+  async updateEntity(
+    tx: Knex.Transaction<any, any>,
+    request: DbEntityRequest,
+  ): Promise<DbEntityResponse> {
     const newRow = entityRequestToDb(request);
 
-    await this.database.transaction(async tx => {
-      // TODO(freben): Currently, several locations can compete for the same entity
-      // TODO(freben): If locationId is unset in the input, it won't be overwritten - should we instead replace with null?
-      const count = await tx<DbEntitiesRow>('entities')
-        .where({ name: request.entity.metadata?.name })
+    const { uid, generation, name, namespace } = request.entity.metadata ?? {};
+
+    // Update by uid, with generation check
+    if (uid && generation) {
+      const rows = await tx<DbEntitiesRow>('entities')
+        .where({ id: uid, generation })
         .update({
           ...newRow,
           id: undefined,
+          generation: generation + 1,
         });
-      if (!count) {
-        await tx<DbEntitiesRow>('entities').insert({
-          ...newRow,
-          id: uuidv4(),
-        });
+
+      if (!rows) {
+        throw new ConflictError(
+          `No entity matching uid="${uid}", generation=${generation}`,
+        );
       }
-    });
+
+      return entityDbToResponse(newRow);
+    }
+
+    // Update by uid, unconditionally
+    if (uid) {
+      const rows = await tx<DbEntitiesRow>('entities')
+        .where({ id: uid })
+        .update({
+          ...newRow,
+          id: undefined,
+          generation: tx.raw('generation + 1'),
+        });
+
+      if (!rows) {
+        throw new ConflictError(`No entity matching uid="${uid}"`);
+      }
+
+      const result = await tx<DbEntitiesRow>('entities')
+        .where({ id: uid })
+        .select();
+
+      if (!result.length) {
+        throw new ConflictError(`Failed to read the generated entity`);
+      }
+
+      return entityDbToResponse(result[0]);
+    }
+
+    // Update by name, with generation check
+    if (name && generation) {
+      const rows = await tx<DbEntitiesRow>('entities')
+        .where({ name, namespace: namespace || null, generation })
+        .update({
+          ...newRow,
+          id: undefined,
+          generation: generation + 1,
+          name: undefined,
+          namespace: undefined,
+        });
+
+      if (!rows) {
+        throw new ConflictError(
+          `No entity matching name="${name}" namespace=${
+            namespace ? `"${namespace}"` : 'null'
+          } generation ${generation}`,
+        );
+      }
+
+      const result = await tx<DbEntitiesRow>('entities')
+        .where({
+          name,
+          namespace: namespace || null,
+          generation: generation + 1,
+        })
+        .select();
+
+      if (!result.length) {
+        throw new ConflictError(`Failed to read the generated entity`);
+      }
+
+      return entityDbToResponse(result[0]);
+    }
+
+    // Update by name, unconditionally
+    if (name) {
+      const oldRows = await tx<DbEntitiesRow>('entities')
+        .where({ name, namespace: namespace || null })
+        .select();
+
+      if (!oldRows.length) {
+        throw new ConflictError(
+          `No entity matching name="${name}" namespace=${
+            namespace ? `"${namespace}"` : 'null'
+          }`,
+        );
+      }
+
+      const rows = await tx<DbEntitiesRow>('entities')
+        .where({ id: oldRows[0].id, generation: oldRows[0].generation })
+        .update({
+          ...newRow,
+          id: undefined,
+          generation: oldRows[0].generation + 1,
+          name: undefined,
+          namespace: undefined,
+        });
+
+      if (!rows) {
+        throw new ConflictError(
+          `Failed to update name="${name}" namespace=${
+            namespace ? `"${namespace}"` : 'null'
+          }`,
+        );
+      }
+
+      const result = await tx<DbEntitiesRow>('entities')
+        .where({ id: oldRows[0].id, generation: oldRows[0].generation + 1 })
+        .select();
+
+      if (!result.length) {
+        throw new ConflictError(`Failed to read the generated entity`);
+      }
+
+      return entityDbToResponse(result[0]);
+    }
+
+    throw new InputError(`Cannot update entity that has neither uid nor name`);
   }
 
-  async entities(): Promise<DbEntityResponse[]> {
-    const items = await this.database<DbEntitiesRow>('entities')
+  async entities(tx: Knex.Transaction<any, any>): Promise<DbEntityResponse[]> {
+    const rows = await tx<DbEntitiesRow>('entities')
       .orderBy('namespace', 'name')
       .select();
-    return items.map(entityDbToResponse);
+    return rows.map(row => entityDbToResponse(row));
   }
 
-  async entity(name: string): Promise<DbEntityResponse> {
-    const items = await this.database<DbEntitiesRow>('entities')
-      .where({ name })
+  async entity(
+    tx: Knex.Transaction<any, any>,
+    name: string,
+    namespace?: string,
+  ): Promise<DbEntityResponse | undefined> {
+    const rows = await tx<DbEntitiesRow>('entities')
+      .where({ name, namespace: namespace || null })
       .select();
-    if (!items.length) {
-      throw new NotFoundError(`Found no entity with name ${name}`);
+
+    if (rows.length !== 1) {
+      return undefined;
     }
-    return entityDbToResponse(items[0]);
+
+    return entityDbToResponse(rows[0]);
   }
 
   async addLocation(location: AddDatabaseLocation): Promise<DbLocationsRow> {

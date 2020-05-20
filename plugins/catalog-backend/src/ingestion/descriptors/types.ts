@@ -14,7 +14,78 @@
  * limitations under the License.
  */
 
-import { DescriptorEnvelope } from '../types';
+/**
+ * The format envelope that's common to all versions/kinds.
+ *
+ * @see https://kubernetes.io/docs/concepts/overview/working-with-objects/kubernetes-objects/
+ */
+export type DescriptorEnvelope = {
+  /**
+   * The version of specification format for this particular entity that
+   * this is written against.
+   */
+  apiVersion: string;
+
+  /**
+   * The high level entity type being described.
+   */
+  kind: string;
+
+  /**
+   * Optional metadata related to the entity.
+   *
+   * @see https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta
+   */
+  metadata?: {
+    /**
+     * A globally unique ID for the entity. This field can not be set by the
+     * user at creation time, and the server will reject an attempt to do so.
+     * The field will be populated in read operations. The field can
+     * (optionally) be specified when performing update or delete operations,
+     * but the server is free to reject requests that do so in such a way that
+     * it breaks semantics.
+     */
+    uid?: string;
+
+    /**
+     * A positive nonzero number that indicates the current generation of data
+     * for this entity; the value is incremented for each update operation.
+     * This field can not be set by the user at creation time, and the server
+     * will reject an attempt to do so. The field will be populated in read
+     * operations. The field can (optionally) be specified when performing
+     * update or delete operations, and the server will then reject the
+     * operation if it does not match the current stored value.
+     */
+    generation?: number;
+
+    /**
+     * The name of the entity. Must be uniqe within the service at any point
+     * in time, for any given namespace.
+     */
+    name?: string;
+
+    /**
+     * The namespace that the entity belongs to.
+     */
+    namespace?: string;
+
+    /**
+     * Key/value pairs of identifying information attached to the entity.
+     */
+    labels?: object;
+
+    /**
+     * Key/value pairs of non-identifying auxiliary information attached to the
+     * entity.
+     */
+    annotations?: object;
+  };
+
+  /**
+   * The specification data describing the entity itself.
+   */
+  spec?: object;
+};
 
 /**
  * Parses and validates a single envelope into its materialized kind.
