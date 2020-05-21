@@ -22,9 +22,11 @@ import {
 } from './types';
 
 import { GoogleAuthProvider } from './google/provider';
+import { GithubAuthProvider } from './github/provider';
 
 const providerFactories: AuthProviderFactories = {
   google: GoogleAuthProvider,
+  github: GithubAuthProvider,
 };
 
 export const defaultRouter = (provider: AuthProviderRouteHandlers) => {
