@@ -36,7 +36,7 @@
     "@backstage/cli": "^0.1.1-alpha.6",
     "@types/lodash": "^4.14.151",
     "@types/uuid": "^7.0.3",
-    "@types/yup": "^0.28.2",
+    "@types/yup": "^0.29.0",
     "jest-fetch-mock": "^3.0.3",
     "tsc-watch": "^4.2.3"
   },
